@@ -33,6 +33,8 @@ pub use self::external::{generate_diff, ExternalMergeTool};
 use crate::config::CommandNameAndArgs;
 use crate::ui::Ui;
 
+const BUILTIN_EDITOR_NAME: &str = ":builtin";
+
 #[derive(Debug, Error)]
 pub enum DiffEditError {
     #[error(transparent)]
@@ -167,7 +169,7 @@ fn editor_args_from_settings(
     if let Some(args) = settings.config().get(key).optional()? {
         Ok(args)
     } else {
-        let default_editor = "meld";
+        let default_editor = BUILTIN_EDITOR_NAME;
         writeln!(
             ui.hint(),
             "Using default editor '{default_editor}'; you can change this by setting {key}"
@@ -181,7 +183,11 @@ fn editor_args_from_settings(
 pub fn get_tool_config(
     settings: &UserSettings,
     name: &str,
-) -> Result<Option<ExternalMergeTool>, ConfigError> {
+) -> Result<Option<MergeTool>, ConfigError> {
+    if name == BUILTIN_EDITOR_NAME {
+        return Ok(Some(MergeTool::Builtin));
+    }
+
     const TABLE_KEY: &str = "merge-tools";
     let tools_table = settings.config().get_table(TABLE_KEY)?;
     if let Some(v) = tools_table.get(name) {
@@ -194,7 +200,7 @@ pub fn get_tool_config(
         if result.program.is_empty() {
             result.program.clone_from(&name.to_string());
         };
-        Ok(Some(result))
+        Ok(Some(MergeTool::External(result)))
     } else {
         Ok(None)
     }
@@ -205,7 +211,7 @@ pub fn get_tool_config(
 pub fn get_tool_config_from_args(
     settings: &UserSettings,
     args: &CommandNameAndArgs,
-) -> Result<Option<ExternalMergeTool>, ConfigError> {
+) -> Result<Option<MergeTool>, ConfigError> {
     match args {
         CommandNameAndArgs::String(name) => get_tool_config(settings, name),
         CommandNameAndArgs::Vec(_) | CommandNameAndArgs::Structured { .. } => Ok(None),
@@ -218,8 +224,8 @@ fn get_diff_editor_from_settings(
 ) -> Result<MergeTool, ExternalToolError> {
     let args = editor_args_from_settings(ui, settings, "ui.diff-editor")?;
     let editor = get_tool_config_from_args(settings, &args)?
-        .unwrap_or_else(|| ExternalMergeTool::with_edit_args(&args));
-    Ok(MergeTool::External(editor))
+        .unwrap_or_else(|| MergeTool::External(ExternalMergeTool::with_edit_args(&args)));
+    Ok(editor)
 }
 
 fn get_merge_tool_from_settings(
@@ -227,14 +233,15 @@ fn get_merge_tool_from_settings(
     settings: &UserSettings,
 ) -> Result<MergeTool, ExternalToolError> {
     let args = editor_args_from_settings(ui, settings, "ui.merge-editor")?;
-    let editor = get_tool_config_from_args(settings, &args)?
-        .unwrap_or_else(|| ExternalMergeTool::with_merge_args(&args));
-    if editor.merge_args.is_empty() {
-        Err(ExternalToolError::MergeArgsNotConfigured {
-            tool_name: args.to_string(),
-        })
-    } else {
-        Ok(MergeTool::External(editor))
+    let mergetool = get_tool_config_from_args(settings, &args)?
+        .unwrap_or_else(|| MergeTool::External(ExternalMergeTool::with_merge_args(&args)));
+    match mergetool {
+        MergeTool::External(mergetool) if mergetool.merge_args.is_empty() => {
+            Err(ExternalToolError::MergeArgsNotConfigured {
+                tool_name: args.to_string(),
+            })
+        }
+        mergetool => Ok(mergetool),
     }
 }
 
@@ -261,30 +268,7 @@ mod tests {
         };
 
         // Default
-        insta::assert_debug_snapshot!(get("").unwrap(), @r###"
-        External(
-            ExternalMergeTool {
-                program: "meld",
-                diff_args: [
-                    "$left",
-                    "$right",
-                ],
-                edit_args: [
-                    "$left",
-                    "$right",
-                ],
-                merge_args: [
-                    "$left",
-                    "$base",
-                    "$right",
-                    "-o",
-                    "$output",
-                    "--auto-merge",
-                ],
-                merge_tool_edits_conflict_markers: false,
-            },
-        )
-        "###);
+        insta::assert_debug_snapshot!(get("").unwrap(), @"Builtin");
 
         // Just program name, edit_args are filled by default
         insta::assert_debug_snapshot!(get(r#"ui.diff-editor = "my-diff""#).unwrap(), @r###"
@@ -433,30 +417,7 @@ mod tests {
         };
 
         // Default
-        insta::assert_debug_snapshot!(get("").unwrap(), @r###"
-        External(
-            ExternalMergeTool {
-                program: "meld",
-                diff_args: [
-                    "$left",
-                    "$right",
-                ],
-                edit_args: [
-                    "$left",
-                    "$right",
-                ],
-                merge_args: [
-                    "$left",
-                    "$base",
-                    "$right",
-                    "-o",
-                    "$output",
-                    "--auto-merge",
-                ],
-                merge_tool_edits_conflict_markers: false,
-            },
-        )
-        "###);
+        insta::assert_debug_snapshot!(get("").unwrap(), @"Builtin");
 
         // Just program name
         insta::assert_debug_snapshot!(get(r#"ui.merge-editor = "my-merge""#).unwrap_err(), @r###"
